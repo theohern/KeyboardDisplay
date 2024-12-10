@@ -1,0 +1,10 @@
+#! /bin/bash
+
+
+for i in $(seq 0 4);
+do 
+    echo $((5-$i))
+    sleep 1
+done
+
+xdotool type "I am the Keyword typing test!"
