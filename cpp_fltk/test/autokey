@@ -1,0 +1,10 @@
+#! /bin/bash
+
+
+for i in $(seq 0 2);
+do 
+    echo $((3-$i))
+    sleep 1
+done
+
+xdotool type $(cat /dev/urandom | tr -cd 'a-zA-Y' | head -c 1000)
