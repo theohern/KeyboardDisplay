@@ -35,8 +35,8 @@ typedef struct{
 
 // Initializations
 
-char *keyboard = "/dev/input/event0";
-char *screen = "/dev/fb0";
+char keyboard[20] = "/dev/input/event2";
+char screen[10] = "/dev/fb2";
 
 int Xoffset = 200;
 int Yoffset = 200;
@@ -71,7 +71,7 @@ char** LoadLetters(){
 	FILE* file;
 	int index = 0;
 	for (char letter = 'A'; letter <= 'Z'; letter++){
-	sprintf(filename, "letters/bin64/%c.bin", letter);
+	sprintf(filename, "../letters/bin64/%c.bin", letter);
 		file = fopen(filename, "rb");
 		if (!file) {
 			fprintf(stderr, "Cannot open letters file\n");
@@ -119,12 +119,8 @@ void* GetEventKeyboard(void* args){
 			return NULL;
 		}
 
-		if (ev.type == EV_KEY && ev.value == 1){
+		if (ev.type == EV_KEY && ev.value == 1 && ev.code >= 16 && ev.code <= 49 && alphabet[ev.code-16] != 48 ){
 			int code = ev.code - 16;
-			if (code == 14){
-				printf("Thread quitting normally...\n");
-				return NULL;
-			}
 			pthread_mutex_lock(&mutex);
 			while ((in + 1) % BUFFER_SIZE == out){
 				pthread_cond_wait(&cond_empty, &mutex);
@@ -135,6 +131,10 @@ void* GetEventKeyboard(void* args){
 			printf("Key pressed : %d letter %c and in : %d\n", code, alphabet[code]);
 			pthread_cond_signal(&cond_full);
 			pthread_mutex_unlock(&mutex);
+			if (code == 14){
+				printf("Thread quitting normally...\n");
+				return NULL;
+			}
 		}
 	}
 
@@ -229,12 +229,11 @@ void FreeFrame(Frame *frame){
  * No Return
 */
 void DisplayLetter(Frame *frame, char letter, char** letters){
-	printf("try to display letter\n");
 	int index = letter - 65; // 'A' = 65
 	for (int i = 0; i < bitmapSize; i++){
 		for (int j = 0; j < bitmapSize; j++){
-			int x = (frame->width/2) + j; // +225 to center
-			int y = (frame->height/2) + i; // +500 to center
+			int x = (frame->width/2) + j + Xoffset; // +225 to center
+			int y = (frame->height/2) + i + Yoffset; // +500 to center
 			if (x < frame->width && y < frame->height){
 				int pos = (y * frame->width + x) * 4;
 				int loc = (i * bitmapSize + j) * 4;
@@ -270,12 +269,42 @@ void* LoopDisplay(void* args){
 		out = (out + 1) % BUFFER_SIZE;
 		pthread_cond_signal(&cond_empty);
 		pthread_mutex_unlock(&mutex);
+		printf("Int letter : %d, char letter : %c\n", letter, letter);
+		if (letter == 81){
+			printf("Thread Display is quitting...\n");
+			return NULL;
+		}
 	}
 	return NULL;
 }
 
 // Main function
-int main(int argc, char* argv[]){
+int main(int argc, char* argv[]){	
+	int opt;
+	while ((opt = getopt(argc, argv, "k:x:y:s:")) != -1) {
+		switch(opt) {
+			case 'k' :
+				memcpy(keyboard+16, optarg, 1*sizeof(char));
+				printf("device for keyboard : %s\n", keyboard);
+				break;
+			case 'x' : 
+				Xoffset = atoi(optarg);
+				printf("Xoffset : %d\n", Xoffset);
+				break;
+			case 'y' : 
+				Yoffset = atoi(optarg);
+				printf("Yoffset : %d\n", Yoffset);
+				break;
+			case 's' :
+				memcpy(screen+7, optarg, 1*sizeof(char));
+				printf("device for screen : %s\n", screen);
+				break;
+			default :
+				printf("Usage: %s -k <1-9> -x <xoffset> -y <yoffset>\n", argv[0]);
+				return 1;
+		}
+	}
+
 	//Load Letters on the Heap
 	char **letters = LoadLetters();
 	if (letters == NULL){
@@ -296,14 +325,12 @@ int main(int argc, char* argv[]){
 	pthread_t Display;
 	pthread_create(&Display, NULL, LoopDisplay, (void*) args);
 
+	pthread_join(EventKeyboard, NULL);
+	pthread_join(Display, NULL);
 
-	int a = 0;
-	while (1){
-		a = (a+1)%10;
-	}
 	RestoreScreen(frame, backup);
 	free(letters);
 	FreeFrame(frame);
+	printf("Pogram is quitting normally\n");
 	return 0;
 }
-
