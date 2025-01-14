@@ -1,4 +1,6 @@
 // Includes
+
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -14,11 +16,13 @@
 #include <unistd.h>
 #include <linux/input.h>
 #include <pthread.h>
+#include <time.h>
 
 // Defines
 #define nChars 26
 #define bitmapSize 64
 #define BUFFER_SIZE 20
+
 
 typedef struct{
 	char *data;
@@ -31,7 +35,14 @@ typedef struct{
 typedef struct{
 	Frame* frame;
 	char** letters;
+	struct timespec *ends;
+	int size;
 } ConsumerArgs;
+
+typedef struct{
+	struct timespec *starts;
+	int size;
+} ProducerArgs;
 
 // Initializations
 
@@ -98,6 +109,7 @@ char** LoadLetters(){
  * No Return
 */
 void* GetEventKeyboard(void* args){
+	ProducerArgs* ProArgs = (ProducerArgs*) args;
 	// Get the keyboard device and the input event
 	const char *alphabet = 	"AZERTYUIOP0000QSDFGHJKLM0000WXCVBN";
 	struct input_event ev;
@@ -120,6 +132,8 @@ void* GetEventKeyboard(void* args){
 		}
 
 		if (ev.type == EV_KEY && ev.value == 1 && ev.code >= 16 && ev.code <= 49 && alphabet[ev.code-16] != 48 ){
+			clock_gettime(CLOCK_MONOTONIC, ProArgs->starts+(ProArgs->size));
+			ProArgs->size++;
 			int code = ev.code - 16;
 			pthread_mutex_lock(&mutex);
 			while ((in + 1) % BUFFER_SIZE == out){
@@ -196,6 +210,7 @@ Frame* GetScreenFrame(){
 
 	frame->width = vinfo.xres;
 	frame->height = vinfo.yres;
+	printf("size of the frame : %d x %d\n", frame->width, frame->height);
 	frame->size = frame->height * frame->width * 4;
 	frame->fb = fb;
 	frame->data = mmap(NULL, frame->size, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
@@ -265,6 +280,8 @@ void* LoopDisplay(void* args){
 		}
 		letter = buffer[out];
 		DisplayLetter(ConsArgs->frame, letter, ConsArgs->letters);
+		ConsArgs->size++;
+		clock_gettime(CLOCK_MONOTONIC, ConsArgs->ends+(ConsArgs->size));
 		printf("Letter %c displayed\n", letter);
 		out = (out + 1) % BUFFER_SIZE;
 		pthread_cond_signal(&cond_empty);
@@ -280,8 +297,9 @@ void* LoopDisplay(void* args){
 
 // Main function
 int main(int argc, char* argv[]){	
+	int cpu = -1;
 	int opt;
-	while ((opt = getopt(argc, argv, "k:x:y:s:")) != -1) {
+	while ((opt = getopt(argc, argv, "c:k:x:y:s:")) != -1) {
 		switch(opt) {
 			case 'k' :
 				memcpy(keyboard+16, optarg, 1*sizeof(char));
@@ -299,8 +317,12 @@ int main(int argc, char* argv[]){
 				memcpy(screen+7, optarg, 1*sizeof(char));
 				printf("device for screen : %s\n", screen);
 				break;
+			case 'c' :
+				cpu = atoi(optarg);
+				printf("Thread assign to processor %d\n", cpu);
+				break;
 			default :
-				printf("Usage: %s -k <1-9> -x <xoffset> -y <yoffset>\n", argv[0]);
+				printf("Usage: %s -k <1-9> -x <xoffset> -y <yoffset> -c <0-3>\n", argv[0]);
 				return 1;
 		}
 	}
@@ -316,14 +338,32 @@ int main(int argc, char* argv[]){
 	char* backup = SaveScreen(frame);
 	
 	// Start both Thread
+	//
+
+	ProducerArgs* proargs = malloc(sizeof(ProducerArgs));
+	proargs->starts = malloc(sizeof(struct timespec) * 10000);
+	proargs->size = 0;
 	pthread_t EventKeyboard;
-	pthread_create(&EventKeyboard, NULL, GetEventKeyboard, NULL);
 
 	ConsumerArgs* args = malloc(sizeof(ConsumerArgs));
 	args->letters = letters;
 	args->frame = frame;
+	args->ends = malloc(sizeof(struct timespec) * 10000);
+	args->size = 0;
 	pthread_t Display;
+
+	if (cpu >= 0){
+		cpu_set_t cpuset;
+		CPU_ZERO(&cpuset);
+		CPU_SET(2,&cpuset);
+		int a = pthread_setaffinity_np(Display, sizeof(cpu_set_t), &cpuset);
+		int b = pthread_setaffinity_np(EventKeyboard, sizeof(cpu_set_t), &cpuset);
+		if (a < 0 && b < 0){
+			printf("impossible to set thread on special cpu\n");
+		}
+	}
 	pthread_create(&Display, NULL, LoopDisplay, (void*) args);
+	pthread_create(&EventKeyboard, NULL, GetEventKeyboard,(void*) proargs);
 
 	pthread_join(EventKeyboard, NULL);
 	pthread_join(Display, NULL);
@@ -331,6 +371,26 @@ int main(int argc, char* argv[]){
 	RestoreScreen(frame, backup);
 	free(letters);
 	FreeFrame(frame);
+	
+	if (args->size != proargs->size){
+		printf("problem with the counter pro : %d and cons : %d\n", proargs->size, args->size);
+	}
+	printf("counter : %d\n", args->size);
+	int sum = 0;
+	long sec = 0;
+	long long nan = 0;
+	int count = 0;
+	for (int i = 0; i < args->size; i++){
+		sec = args->ends[i].tv_sec - proargs->starts[i].tv_sec;
+		nan = args->ends[i].tv_nsec - proargs->starts[i].tv_nsec;
+		if (nan < 0){
+			--sec;
+			nan  += 1000000000;
+		}
+		sum += nan;
+		count++;
+	}
+	//printf("average speed %ld\n", sum/count);
 	printf("Pogram is quitting normally\n");
 	return 0;
 }
